@@ -25,15 +25,10 @@ on:
         required: false
         default: "0.5"
         type: string
-      filename:
-        description: "Bestandsnaam voor output, zonder extensie"
+      supabase_folder:
+        description: "Map in de bucket, bijvoorbeeld formatted of formatted/campaign_01"
         required: false
-        default: "output"
-        type: string
-      webhook_url:
-        description: "Webhook waar alle outputs naartoe moeten"
-        required: false
-        default: "https://rbmedia.app.n8n.cloud/webhook/81475cba-5143-4232-9be7-8a0bb04b83a0"
+        default: "formatted"
         type: string
 
 jobs:
@@ -65,23 +60,27 @@ jobs:
           MODE: ${{ inputs.mode }}
           FOCAL_X: ${{ inputs.focal_x }}
           FOCAL_Y: ${{ inputs.focal_y }}
-          FILENAME: ${{ inputs.filename }}
         run: |
           python scripts/format_media.py \
             --media-url "$MEDIA_URL" \
             --mode "$MODE" \
             --focal-x "$FOCAL_X" \
-            --focal-y "$FOCAL_Y" \
-            --filename "$FILENAME"
+            --focal-y "$FOCAL_Y"
 
-      - name: Send all outputs in one request
+      - name: Upload outputs to Supabase
         env:
-          WEBHOOK_URL: ${{ inputs.webhook_url }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+          SUPABASE_FOLDER: ${{ inputs.supabase_folder }}
           RUN_ID: ${{ github.run_id }}
-          REPO: ${{ github.repository }}
-          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+
+          if [ -z "${SUPABASE_URL:-}" ] || [ -z "${SUPABASE_KEY:-}" ] || [ -z "${SUPABASE_BUCKET:-}" ]; then
+            echo "Repo secrets ontbreken: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, SUPABASE_BUCKET"
+            exit 1
+          fi
 
           if [ ! -d out ]; then
             echo "Map out/ ontbreekt"
@@ -90,64 +89,70 @@ jobs:
 
           shopt -s nullglob
           files=(out/*)
-
           if [ ${#files[@]} -eq 0 ]; then
             echo "Geen output bestanden gevonden"
             exit 1
           fi
 
-          echo "Bestanden die verstuurd worden:"
-          for f in "${files[@]}"; do
-            echo " - $(basename "$f")"
-          done
+          folder="${SUPABASE_FOLDER%/}"
+          if [ -z "$folder" ]; then
+            folder="formatted"
+          fi
 
-          # Bouw manifest JSON
-          manifest="{\"repo\":\"${REPO}\",\"run_id\":\"${RUN_ID}\",\"sha\":\"${SHA}\",\"files\":["
+          manifest_path="out/manifest.json"
+          echo "{" > "$manifest_path"
+          echo "  \"bucket\": \"${SUPABASE_BUCKET}\"," >> "$manifest_path"
+          echo "  \"folder\": \"${folder}\"," >> "$manifest_path"
+          echo "  \"run_id\": \"${RUN_ID}\"," >> "$manifest_path"
+          echo "  \"files\": [" >> "$manifest_path"
 
           first=true
           for f in "${files[@]}"; do
-            base="$(basename "$f")"
+            name="$(basename "$f")"
 
-            platform="unknown"
-            case "$base" in
-              *_instagram_post.*) platform="instagram_post" ;;
-              *_facebook_post.*) platform="facebook_post" ;;
-              *_tiktok.*) platform="tiktok" ;;
-              *_yt_shorts.*) platform="yt_shorts" ;;
+            content_type="application/octet-stream"
+            case "$name" in
+              *.jpg|*.jpeg) content_type="image/jpeg" ;;
+              *.png) content_type="image/png" ;;
+              *.webp) content_type="image/webp" ;;
+              *.mp4) content_type="video/mp4" ;;
+              *.mov) content_type="video/quicktime" ;;
+              *.m4v) content_type="video/x-m4v" ;;
+              *.webm) content_type="video/webm" ;;
             esac
+
+            object_path="${folder}/${name}"
+            upload_url="${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${object_path}?upsert=true"
+
+            echo "Upload: ${object_path} (${content_type})"
+            curl -sS -X POST "$upload_url" \
+              -H "Authorization: Bearer ${SUPABASE_KEY}" \
+              -H "apikey: ${SUPABASE_KEY}" \
+              -H "Content-Type: ${content_type}" \
+              --data-binary @"${f}" \
+              -o /tmp/supabase_upload_resp.txt
+
+            public_url="${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${object_path}"
 
             if [ "$first" = true ]; then
               first=false
             else
-              manifest="${manifest},"
+              echo "    ," >> "$manifest_path"
             fi
 
-            manifest="${manifest}{\"filename\":\"${base}\",\"platform\":\"${platform}\"}"
+            echo "    {\"filename\":\"${name}\",\"path\":\"${object_path}\",\"public_url\":\"${public_url}\"}" >> "$manifest_path"
           done
 
-          manifest="${manifest}]}"
-          echo "Manifest: $manifest"
+          echo "" >> "$manifest_path"
+          echo "  ]" >> "$manifest_path"
+          echo "}" >> "$manifest_path"
 
-          # Bouw curl command met meerdere files[]
-          curl_cmd=(curl -sS -X POST "$WEBHOOK_URL" -F "manifest=${manifest}")
+          echo "Manifest geschreven naar ${manifest_path}"
+          cat "$manifest_path"
 
-          for f in "${files[@]}"; do
-            curl_cmd+=(-F "files[]=@${f}")
-          done
-
-          http_code=$("${curl_cmd[@]}" -o /tmp/webhook_response.txt -w "%{http_code}")
-
-          cat /tmp/webhook_response.txt || true
-          echo ""
-
-          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-            echo "Webhook gaf status $http_code"
-            exit 1
-          fi
-
-      - name: Upload artifact (optional backup)
+      - name: Upload artifact (backup)
         uses: actions/upload-artifact@v4
         with:
-          name: formatted-all
+          name: formatted-and-manifest
           path: out/
           if-no-files-found: error

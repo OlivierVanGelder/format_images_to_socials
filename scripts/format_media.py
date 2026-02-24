@@ -6,6 +6,7 @@ import subprocess
 import sys
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlparse, unquote
 
 from PIL import Image
 
@@ -61,6 +62,21 @@ def guess_ext_from_url(url: str) -> str | None:
     if not m:
         return None
     return "." + m.group(1).lower()
+
+
+def derive_input_basename(url: str) -> str:
+    parsed = urlparse(url)
+    path = unquote(parsed.path)
+    name = Path(path).name
+    stem = Path(name).stem
+
+    if not stem.strip():
+        return "input"
+
+    stem = re.sub(r"\s+", " ", stem).strip()
+    stem = re.sub(r"[^\w\s\.\(\)\[\]]+", "", stem, flags=re.UNICODE).strip()
+
+    return stem if stem else "input"
 
 
 def download(url: str, dest: Path) -> None:
@@ -257,7 +273,6 @@ def main() -> int:
     p.add_argument("--mode", required=True, choices=["crop", "pad"])
     p.add_argument("--focal-x", required=False, default="0.5")
     p.add_argument("--focal-y", required=False, default="0.5")
-    p.add_argument("--filename", required=False, default="output")
     args = p.parse_args()
 
     focal_x = clamp01(float(args.focal_x))
@@ -268,12 +283,12 @@ def main() -> int:
     work.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    base = derive_input_basename(args.media_url)
+
     ext = guess_ext_from_url(args.media_url) or ".bin"
     inp = work / f"input{ext}"
     download(args.media_url, inp)
     inp = detect_and_fix_extension(inp)
-
-    base = args.filename.strip() or "output"
 
     for platform, dims in PLATFORMS.items():
         target_w = dims["w"]
@@ -282,13 +297,11 @@ def main() -> int:
         if is_image(inp):
             outp = out_dir / f"{base}_{platform}.jpg"
             format_image(inp, outp, target_w, target_h, args.mode, focal_x, focal_y)
-            print(f"Wrote {outp}")
             continue
 
         if is_video(inp):
             outp = out_dir / f"{base}_{platform}.mp4"
             format_video(inp, outp, target_w, target_h, args.mode, focal_x, focal_y)
-            print(f"Wrote {outp}")
             continue
 
         raise RuntimeError(f"Onbekend bestandstype: {inp.suffix}")
