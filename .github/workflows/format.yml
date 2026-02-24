@@ -1,0 +1,88 @@
+name: Format media for socials
+
+on:
+  workflow_dispatch:
+    inputs:
+      media_url:
+        description: "Directe URL naar media (jpg, png, mp4, mov). Moet zonder login te downloaden zijn."
+        required: true
+        type: string
+      platform:
+        description: "Doelplatform"
+        required: true
+        type: choice
+        options:
+          - tiktok
+          - instagram
+          - yt_shorts
+          - facebook
+      mode:
+        description: "Bij snijden (crop) of vullen met randen (pad)"
+        required: true
+        default: crop
+        type: choice
+        options:
+          - crop
+          - pad
+      focal_x:
+        description: "Focuspunt horizontaal 0.0 tot 1.0 (0 links, 0.5 midden, 1 rechts)"
+        required: false
+        default: "0.5"
+        type: string
+      focal_y:
+        description: "Focuspunt verticaal 0.0 tot 1.0 (0 boven, 0.5 midden, 1 onder)"
+        required: false
+        default: "0.5"
+        type: string
+      filename:
+        description: "Bestandsnaam voor output, zonder extensie"
+        required: false
+        default: "output"
+        type: string
+
+jobs:
+  format:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Format media
+        env:
+          MEDIA_URL: ${{ inputs.media_url }}
+          PLATFORM: ${{ inputs.platform }}
+          MODE: ${{ inputs.mode }}
+          FOCAL_X: ${{ inputs.focal_x }}
+          FOCAL_Y: ${{ inputs.focal_y }}
+          FILENAME: ${{ inputs.filename }}
+        run: |
+          python scripts/format_media.py \
+            --media-url "$MEDIA_URL" \
+            --platform "$PLATFORM" \
+            --mode "$MODE" \
+            --focal-x "$FOCAL_X" \
+            --focal-y "$FOCAL_Y" \
+            --filename "$FILENAME"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: formatted-${{ inputs.platform }}
+          path: out/
+          if-no-files-found: error
