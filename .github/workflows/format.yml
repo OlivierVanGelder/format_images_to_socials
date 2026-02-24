@@ -122,7 +122,11 @@ jobs:
             esac
 
             object_path="${folder}/${name}"
-            upload_url="${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${object_path}?upsert=true"
+
+            # URL encode object_path, maar laat slashes staan
+            encoded_path="$(python -c "import urllib.parse; print(urllib.parse.quote('${object_path}', safe='/'))")"
+
+            upload_url="${SUPABASE_URL}/storage/v1/object/${SUPABASE_BUCKET}/${encoded_path}?upsert=true"
 
             echo "Upload: ${object_path} (${content_type})"
             curl -sS -X POST "$upload_url" \
@@ -132,7 +136,7 @@ jobs:
               --data-binary @"${f}" \
               -o /tmp/supabase_upload_resp.txt
 
-            public_url="${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${object_path}"
+            public_url="${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${encoded_path}"
 
             if [ "$first" = true ]; then
               first=false
