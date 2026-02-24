@@ -74,7 +74,7 @@ jobs:
             --focal-y "$FOCAL_Y" \
             --filename "$FILENAME"
 
-      - name: Send outputs to webhook
+      - name: Send all outputs in one request
         env:
           WEBHOOK_URL: ${{ inputs.webhook_url }}
           RUN_ID: ${{ github.run_id }}
@@ -90,12 +90,21 @@ jobs:
 
           shopt -s nullglob
           files=(out/*)
+
           if [ ${#files[@]} -eq 0 ]; then
-            echo "Geen output bestanden gevonden in out/"
+            echo "Geen output bestanden gevonden"
             exit 1
           fi
 
-          echo "Versturen naar webhook: $WEBHOOK_URL"
+          echo "Bestanden die verstuurd worden:"
+          for f in "${files[@]}"; do
+            echo " - $(basename "$f")"
+          done
+
+          # Bouw manifest JSON
+          manifest="{\"repo\":\"${REPO}\",\"run_id\":\"${RUN_ID}\",\"sha\":\"${SHA}\",\"files\":["
+
+          first=true
           for f in "${files[@]}"; do
             base="$(basename "$f")"
 
@@ -107,25 +116,34 @@ jobs:
               *_yt_shorts.*) platform="yt_shorts" ;;
             esac
 
-            echo "Stuur $base (platform: $platform)"
-
-            http_code=$(
-              curl -sS -o /tmp/webhook_response.txt -w "%{http_code}" \
-                -X POST "$WEBHOOK_URL" \
-                -F "file=@${f}" \
-                -F "platform=${platform}" \
-                -F "filename=${base}" \
-                -F "metadata={\"repo\":\"${REPO}\",\"run_id\":\"${RUN_ID}\",\"sha\":\"${SHA}\"}"
-            )
-
-            cat /tmp/webhook_response.txt || true
-            echo ""
-
-            if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
-              echo "Webhook gaf status $http_code voor $base"
-              exit 1
+            if [ "$first" = true ]; then
+              first=false
+            else
+              manifest="${manifest},"
             fi
+
+            manifest="${manifest}{\"filename\":\"${base}\",\"platform\":\"${platform}\"}"
           done
+
+          manifest="${manifest}]}"
+          echo "Manifest: $manifest"
+
+          # Bouw curl command met meerdere files[]
+          curl_cmd=(curl -sS -X POST "$WEBHOOK_URL" -F "manifest=${manifest}")
+
+          for f in "${files[@]}"; do
+            curl_cmd+=(-F "files[]=@${f}")
+          done
+
+          http_code=$("${curl_cmd[@]}" -o /tmp/webhook_response.txt -w "%{http_code}")
+
+          cat /tmp/webhook_response.txt || true
+          echo ""
+
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Webhook gaf status $http_code"
+            exit 1
+          fi
 
       - name: Upload artifact (optional backup)
         uses: actions/upload-artifact@v4
