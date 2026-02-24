@@ -1,7 +1,5 @@
 import argparse
 import json
-import math
-import os
 import re
 import shutil
 import subprocess
@@ -13,7 +11,6 @@ from PIL import Image
 
 
 PLATFORMS = {
-    # In de praktijk zijn TikTok, Reels en Shorts allemaal 9:16 op 1080x1920 het meest gangbaar.
     "tiktok": {"w": 1080, "h": 1920},
     "instagram": {"w": 1080, "h": 1920},
     "yt_shorts": {"w": 1080, "h": 1920},
@@ -60,7 +57,6 @@ def clamp01(x: float) -> float:
 
 
 def guess_ext_from_url(url: str) -> str | None:
-    # Probeert extensie uit URL te halen, ook bij querystrings
     m = re.search(r"\.([a-zA-Z0-9]{2,5})(?:\?|$)", url)
     if not m:
         return None
@@ -90,19 +86,13 @@ def crop_box_centered(
     focal_x: float,
     focal_y: float,
 ) -> tuple[int, int, int, int]:
-    """
-    Bepaalt crop box binnen bron, met focuspunt.
-    Return: left, top, width, height
-    """
     src_ratio = src_w / src_h
     tgt_ratio = target_w / target_h
 
     if src_ratio > tgt_ratio:
-        # bron is te breed, crop in breedte
         crop_h = src_h
         crop_w = int(round(crop_h * tgt_ratio))
     else:
-        # bron is te hoog, crop in hoogte
         crop_w = src_w
         crop_h = int(round(crop_w / tgt_ratio))
 
@@ -124,15 +114,7 @@ def crop_box_centered(
     return left, top, crop_w, crop_h
 
 
-def pad_box(
-    src_w: int,
-    src_h: int,
-    target_w: int,
-    target_h: int,
-) -> tuple[int, int]:
-    """
-    Bepaalt geschaalde afmetingen zodat alles past binnen target.
-    """
+def pad_box(src_w: int, src_h: int, target_w: int, target_h: int) -> tuple[int, int]:
     scale = min(target_w / src_w, target_h / src_h)
     new_w = int(round(src_w * scale))
     new_h = int(round(src_h * scale))
@@ -201,7 +183,6 @@ def format_video(
     focal_y: float,
 ) -> None:
     src_w, src_h = ffprobe_dims(inp)
-
     outp.parent.mkdir(parents=True, exist_ok=True)
 
     if mode == "crop":
@@ -239,10 +220,40 @@ def format_video(
     run(cmd)
 
 
+def detect_and_fix_extension(inp: Path) -> Path:
+    if inp.suffix != ".bin":
+        return inp
+
+    try:
+        with Image.open(inp) as im:
+            fmt = (im.format or "").lower()
+        if fmt in {"jpeg", "jpg"}:
+            new = inp.with_suffix(".jpg")
+            inp.rename(new)
+            return new
+        if fmt == "png":
+            new = inp.with_suffix(".png")
+            inp.rename(new)
+            return new
+        if fmt == "webp":
+            new = inp.with_suffix(".webp")
+            inp.rename(new)
+            return new
+    except Exception:
+        pass
+
+    try:
+        ffprobe_dims(inp)
+        new = inp.with_suffix(".mp4")
+        inp.rename(new)
+        return new
+    except Exception as e:
+        raise RuntimeError("Kon bestandstype niet bepalen. Gebruik een URL met een herkenbare extensie.") from e
+
+
 def main() -> int:
     p = argparse.ArgumentParser()
     p.add_argument("--media-url", required=True)
-    p.add_argument("--platform", required=True, choices=sorted(PLATFORMS.keys()))
     p.add_argument("--mode", required=True, choices=["crop", "pad"])
     p.add_argument("--focal-x", required=False, default="0.5")
     p.add_argument("--focal-y", required=False, default="0.5")
@@ -252,66 +263,37 @@ def main() -> int:
     focal_x = clamp01(float(args.focal_x))
     focal_y = clamp01(float(args.focal_y))
 
-    target = PLATFORMS[args.platform]
-    target_w = target["w"]
-    target_h = target["h"]
-
     work = Path("work")
     out_dir = Path("out")
     work.mkdir(parents=True, exist_ok=True)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ext = guess_ext_from_url(args.media_url)
-    if not ext:
-        # fallback, we proberen later type te detecteren
-        ext = ".bin"
-
+    ext = guess_ext_from_url(args.media_url) or ".bin"
     inp = work / f"input{ext}"
     download(args.media_url, inp)
-
-    # Als .bin, probeer te hernoemen op basis van header of openen
-    if inp.suffix == ".bin":
-        # Probeer image
-        try:
-            with Image.open(inp) as im:
-                fmt = (im.format or "").lower()
-            if fmt in {"jpeg", "jpg"}:
-                new = inp.with_suffix(".jpg")
-                inp.rename(new)
-                inp = new
-            elif fmt == "png":
-                new = inp.with_suffix(".png")
-                inp.rename(new)
-                inp = new
-            elif fmt == "webp":
-                new = inp.with_suffix(".webp")
-                inp.rename(new)
-                inp = new
-        except Exception:
-            # Probeer video met ffprobe
-            try:
-                ffprobe_dims(inp)
-                new = inp.with_suffix(".mp4")
-                inp.rename(new)
-                inp = new
-            except Exception as e:
-                raise RuntimeError("Kon bestandstype niet bepalen. Gebruik een URL met een herkenbare extensie.") from e
+    inp = detect_and_fix_extension(inp)
 
     base = args.filename.strip() or "output"
 
-    if is_image(inp):
-        outp = out_dir / f"{base}_{args.platform}.jpg"
-        format_image(inp, outp, target_w, target_h, args.mode, focal_x, focal_y)
-        print(f"Wrote {outp}")
-        return 0
+    for platform, dims in PLATFORMS.items():
+        target_w = dims["w"]
+        target_h = dims["h"]
 
-    if is_video(inp):
-        outp = out_dir / f"{base}_{args.platform}.mp4"
-        format_video(inp, outp, target_w, target_h, args.mode, focal_x, focal_y)
-        print(f"Wrote {outp}")
-        return 0
+        if is_image(inp):
+            outp = out_dir / f"{base}_{platform}.jpg"
+            format_image(inp, outp, target_w, target_h, args.mode, focal_x, focal_y)
+            print(f"Wrote {outp}")
+            continue
 
-    raise RuntimeError(f"Onbekend bestandstype: {inp.suffix}")
+        if is_video(inp):
+            outp = out_dir / f"{base}_{platform}.mp4"
+            format_video(inp, outp, target_w, target_h, args.mode, focal_x, focal_y)
+            print(f"Wrote {outp}")
+            continue
+
+        raise RuntimeError(f"Onbekend bestandstype: {inp.suffix}")
+
+    return 0
 
 
 if __name__ == "__main__":

@@ -7,15 +7,6 @@ on:
         description: "Directe URL naar media (jpg, png, mp4, mov). Moet zonder login te downloaden zijn."
         required: true
         type: string
-      platform:
-        description: "Doelplatform"
-        required: true
-        type: choice
-        options:
-          - tiktok
-          - instagram
-          - yt_shorts
-          - facebook
       mode:
         description: "Bij snijden (crop) of vullen met randen (pad)"
         required: true
@@ -38,6 +29,11 @@ on:
         description: "Bestandsnaam voor output, zonder extensie"
         required: false
         default: "output"
+        type: string
+      webhook_url:
+        description: "Webhook waar alle outputs naartoe moeten"
+        required: false
+        default: "https://rbmedia.app.n8n.cloud/webhook/81475cba-5143-4232-9be7-8a0bb04b83a0"
         type: string
 
 jobs:
@@ -63,10 +59,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Format media
+      - name: Format media (all platforms)
         env:
           MEDIA_URL: ${{ inputs.media_url }}
-          PLATFORM: ${{ inputs.platform }}
           MODE: ${{ inputs.mode }}
           FOCAL_X: ${{ inputs.focal_x }}
           FOCAL_Y: ${{ inputs.focal_y }}
@@ -74,15 +69,71 @@ jobs:
         run: |
           python scripts/format_media.py \
             --media-url "$MEDIA_URL" \
-            --platform "$PLATFORM" \
             --mode "$MODE" \
             --focal-x "$FOCAL_X" \
             --focal-y "$FOCAL_Y" \
             --filename "$FILENAME"
 
-      - name: Upload artifact
+      - name: Send outputs to webhook
+        env:
+          WEBHOOK_URL: ${{ inputs.webhook_url }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -d out ]; then
+            echo "Map out/ ontbreekt"
+            exit 1
+          fi
+
+          shopt -s nullglob
+          files=(out/*)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "Geen output bestanden gevonden in out/"
+            exit 1
+          fi
+
+          echo "Versturen naar webhook: $WEBHOOK_URL"
+          for f in "${files[@]}"; do
+            base="$(basename "$f")"
+
+            platform="unknown"
+            case "$base" in
+              *_tiktok.*) platform="tiktok" ;;
+              *_instagram.*) platform="instagram" ;;
+              *_yt_shorts.*) platform="yt_shorts" ;;
+              *_facebook.*) platform="facebook" ;;
+            esac
+
+            echo "Stuur $base (platform: $platform)"
+
+            # Multipart form:
+            # file: binaire upload
+            # platform: tekstveld
+            # metadata: JSON string
+            http_code=$(
+              curl -sS -o /tmp/webhook_response.txt -w "%{http_code}" \
+                -X POST "$WEBHOOK_URL" \
+                -F "file=@${f}" \
+                -F "platform=${platform}" \
+                -F "filename=${base}" \
+                -F "metadata={\"repo\":\"${REPO}\",\"run_id\":\"${RUN_ID}\",\"sha\":\"${SHA}\"}"
+            )
+
+            cat /tmp/webhook_response.txt || true
+            echo ""
+
+            if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+              echo "Webhook gaf status $http_code voor $base"
+              exit 1
+            fi
+          done
+
+      - name: Upload artifact (optional backup)
         uses: actions/upload-artifact@v4
         with:
-          name: formatted-${{ inputs.platform }}
+          name: formatted-all
           path: out/
           if-no-files-found: error
