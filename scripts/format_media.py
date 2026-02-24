@@ -11,10 +11,10 @@ from PIL import Image
 
 
 PLATFORMS = {
-    "tiktok": {"w": 1080, "h": 1920},
-    "instagram": {"w": 1080, "h": 1920},
-    "yt_shorts": {"w": 1080, "h": 1920},
-    "facebook": {"w": 1080, "h": 1920},
+    "instagram_post": {"w": 1080, "h": 1350},  # 4:5
+    "facebook_post": {"w": 1080, "h": 1080},   # 1:1
+    "tiktok": {"w": 1080, "h": 1920},          # 9:16
+    "yt_shorts": {"w": 1080, "h": 1920},       # 9:16
 }
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}

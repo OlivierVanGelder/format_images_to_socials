@@ -101,18 +101,14 @@ jobs:
 
             platform="unknown"
             case "$base" in
+              *_instagram_post.*) platform="instagram_post" ;;
+              *_facebook_post.*) platform="facebook_post" ;;
               *_tiktok.*) platform="tiktok" ;;
-              *_instagram.*) platform="instagram" ;;
               *_yt_shorts.*) platform="yt_shorts" ;;
-              *_facebook.*) platform="facebook" ;;
             esac
 
             echo "Stuur $base (platform: $platform)"
 
-            # Multipart form:
-            # file: binaire upload
-            # platform: tekstveld
-            # metadata: JSON string
             http_code=$(
               curl -sS -o /tmp/webhook_response.txt -w "%{http_code}" \
                 -X POST "$WEBHOOK_URL" \
